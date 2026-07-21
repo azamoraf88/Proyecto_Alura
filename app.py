@@ -1,154 +1,195 @@
-import streamlit as st
-import pandas as pd
 import os
+import tempfile
+from pathlib import Path
+
+import streamlit as st
+from langchain_chroma import Chroma
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.documents import Document
 from langchain_groq import ChatGroq
-from langchain.prompts import PromptTemplate
-from langchain.agents import create_react_agent
-from langchain.agents import AgentExecutor
-from herramientas import crear_herramientas
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Inicia la aplicación
-st.set_page_config(page_title="Asistente de Análisis de Datos con IA", layout="centered")
-st.title("🦜 Asistente de Análisis de Datos con IA")
+st.set_page_config(page_title="IngrediBot", page_icon="📄", layout="wide")
+st.title("Hola! Soy IngrediBot, un especialista en los procedimientos de la empresa Ingreditech S. de R.L. de C.V.")
+st.caption("Para que pueda contestar tus preguntas, sube los procedimientos en PDF que deseas conocer mejor :).")
 
-# Descripción de la herramienta
-st.info("""
-Este asistente utiliza un agente, creado con Langchain, para ayudarte a explorar, analizar y visualizar datos de forma interactiva.
-Basta con subir un archivo CSV y podrás:
+PERSIST_DIR = Path(__file__).parent / "chroma_db"
+COLLECTION_NAME = "pdf_documents"
 
-* 📄 **Generar reportes automáticos**:
 
-  * **Reporte de información general**: presenta la dimensión del DataFrame, nombres y tipos de las columnas, conteo de datos nulos y duplicados, además de sugerencias de tratamientos y análisis adicionales.
-  * **Reporte de estadísticas descriptivas**: muestra valores como media, mediana, desviación estándar, mínimo y máximo; identifica posibles outliers y sugiere próximos pasos con base en los patrones detectados.
+@st.cache_resource
+def get_embeddings():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-* 🔎 **Hacer preguntas simples sobre los datos**: como "¿Cuál es el promedio de la columna X?", "¿Cuántos registros existen para cada categoría de la columna Y?".
 
-* 📊 **Crear gráficos automáticamente** a partir de preguntas en lenguaje natural.
-
-Ideal para analistas, científicos de datos y equipos que buscan agilidad e insights rápidos con apoyo de IA.
-""")
-
-# Upload de CSV
-st.markdown("### 📁 Realiza la carga de tu archivo CSV")
-archivo_cargado = st.file_uploader("Selecciona un archivo CSV", type="csv", label_visibility="collapsed")
-
-if archivo_cargado:
-    df = pd.read_csv(archivo_cargado)
-    st.success("Archivo cargado exitosamente!")
-    st.markdown("### 🔍 Primeras filas de tu conjunto de datos")
-    st.dataframe(df.head())
-
-    # LLM
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-    llm = ChatGroq(
-        api_key=GROQ_API_KEY,
-        model_name="llama3-70b-8192",
-        temperature=0
+@st.cache_resource
+def get_llm(groq_api_key: str):
+    return ChatGroq(
+        groq_api_key=groq_api_key,
+        model_name="llama-3.1-8b-instant",
+        temperature=0.2,
     )
 
-    # Herramientas
-    tools = crear_herramientas(df)
 
-    # Prompt react
-    df_head = df.head().to_markdown()
+def init_vector_store(embeddings):
+    PERSIST_DIR.mkdir(exist_ok=True)
+    return Chroma(
+        collection_name=COLLECTION_NAME,
+        embedding_function=embeddings,
+        persist_directory=str(PERSIST_DIR),
+    )
 
-    prompt_react_es = PromptTemplate(
-        input_variables=["input", "agent_scratchpad", "tools", "tool_names"],
-        partial_variables={"df_head": df_head},
-        template="""
-            Eres un asistente que responde en castellano.
 
-            Tienes acceso a un dataframe pandas llamado `df`.
-            Aquí están las primeras filas del DataFrame, obtenidas usando `df.head().to_markdown()`:
-            
-            {df_head}
+def load_documents_from_uploads(uploaded_files):
+    documents: list[Document] = []
+    temp_paths = []
 
-            Responde a las siguientes preguntas de la mejor manera posible.
-            Para este fin, tienes acceso a las siguientes herramientas:
+    try:
+        for uploaded_file in uploaded_files:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                temp_paths.append(tmp_file.name)
 
-            {tools}
+        for temp_path in temp_paths:
+            loader = PyPDFLoader(temp_path)
+            documents.extend(loader.load())
+    finally:
+        for temp_path in temp_paths:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
-            Usa el siguiente formato:
+    return documents
 
-            Question: La pregunta de entrada que debes responder
-            Thought: Debes siempre pensar en lo que debes hacer
-            Action: La acción que será ejecutada, debe ser una de las [{tool_names}]
-            Action Input: La entrada para la acción
-            Observation: El resultado de la acción
-            ... (este Thought/Action/Action Input/Observation puede repetirse N veces)
-            Thought: Ahora sé la respuesta final
-            Final Answer: La respuesta final para la pregunta de entrada inicial.
 
-            Comienza!
+def index_documents(uploaded_files):
+    if not uploaded_files:
+        st.warning("Sube al menos un archivo PDF para comenzar.")
+        return None
 
-            Question: {input}
-            Thought: {agent_scratchpad}
-        """
+    if not st.session_state.get("groq_api_key"):
+        st.warning("Introduce tu API key de Groq antes de procesar los documentos.")
+        return None
+
+    embeddings = get_embeddings()
+    docs = load_documents_from_uploads(uploaded_files)
+    if not docs:
+        st.warning("No se pudieron leer documentos desde los PDFs cargados.")
+        return None
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    chunks = splitter.split_documents(docs)
+
+    if st.session_state.get("vector_store") is None:
+        vector_store = Chroma.from_documents(
+            documents=chunks,
+            embedding=embeddings,
+            persist_directory=str(PERSIST_DIR),
+            collection_name=COLLECTION_NAME,
         )
+    else:
+        vector_store = st.session_state.vector_store
+        vector_store.add_documents(chunks)
+        vector_store.persist()
 
-    
-    # Agente
-    agente = create_react_agent(llm=llm, tools=tools, prompt=prompt_react_es)
-    orquestador = AgentExecutor(agent=agente,
-                                tools=tools,
-                                verbose=True,
-                                handle_parsing_errors=True)
-
-    # ACCIONES RÁPIDAS
-    st.markdown("---")
-    st.markdown("## ⚡ Acciones rápidas")
-
-    # Reporte de Informaciones Generales
-    if st.button("📄 Reporte de Informaciones Generales", key="boton_reporte_general"):
-        with st.spinner("Generando Reporte 🦜"):
-            respuesta = orquestador.invoke({"input": "Quero um relatório com informações sobre os dados"})
-            st.session_state['reporte_general'] = respuesta["output"]
-
-    # Exhibe el reporte con botón de descarga
-    if 'reporte_general' in st.session_state:
-        with st.expander("Resultado: Reporte de Informaciones Generales"):
-            st.markdown(st.session_state['reporte_general'])
-
-            st.download_button(
-                label="📥 Descargar Reporte",
-                data=st.session_state['reporte_general'],
-                file_name="reporte_informaciones_generales.md",
-                mime="text/markdown"
-            )
-
-    # Reporte de estadísticas descriptivas
-    if st.button("📄 Reporte de estadísticas descriptivas", key="boton_reporte_estadisticas"):
-        with st.spinner("Generando Reporte 🦜"):
-            respuesta = orquestador.invoke({"input": "Quiero un Reporte de estadísticas descriptivas"})
-            st.session_state['reporte_estadisticas'] = respuesta["output"]
-
-    # Exhibe el reporte almacenado con opción de descarga
-    if 'reporte_estadisticas' in st.session_state:
-        with st.expander("Resultado: Reporte de estadísticas descriptivas"):
-            st.markdown(st.session_state['reporte_estadisticas'])
-
-            st.download_button(
-                label="📥 Descargar Reporte",
-                data=st.session_state['reporte_estadisticas'],
-                file_name="reporte_estadisticas_descritivas.md",
-                mime="text/markdown"  
-            )
-   
-   # PERGUNTA SOBRE LOS DATOS
-    st.markdown("---")
-    st.markdown("## 🔎 Preguntas sobre los datos")
-    pregunta_sobre_datos = st.text_input("Realiza una pregunta sobre los datos (ej: 'Cuál es el promedio de tiempo de entrega?')")
-    if st.button("Responder pregunta", key="responder_pregunta_datos"):
-        with st.spinner("Analizando los datos 🦜"):
-            respuesta = orquestador.invoke({"input": pregunta_sobre_datos})
-            st.markdown((respuesta["output"]))
+    st.session_state.vector_store = vector_store
+    st.session_state.documents_indexed = True
+    st.success(f"Se procesaron {len(chunks)} fragmentos de {len(uploaded_files)} PDF(s).")
+    return vector_store
 
 
-    # GENERACIÓN DE GRÁFICOS
-    st.markdown("---")
-    st.markdown("## 📊 Crear gráfico con base en una pregunta")
+def answer_question(question: str):
+    if not st.session_state.get("groq_api_key"):
+        return "Introduce tu API key de Groq para poder responder preguntas.", []
 
-    pregunta_grafico = st.text_input("Qué deseas visualizar? (ej: 'Genera un gráfico del promedio de tiempo de entrega por clima.')")
-    if st.button("Generar gráfico", key="generar_grafico"):
-        with st.spinner("Generando el gráfico 🦜"):
-            orquestador.invoke({"input": pregunta_grafico})
+    vector_store = st.session_state.get("vector_store")
+    if vector_store is None:
+        return "Aún no hay documentos indexados. Sube un archivo antes de comenzar.", []
+
+    retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+    if hasattr(retriever, "invoke"):
+        docs = retriever.invoke(question)
+    else:
+        docs = retriever.get_relevant_documents(question)
+
+    if not docs:
+        return "No hay información disponible en los documentos cargados. Intenta cargando otro documento o haciendo otra pregunta.", []
+
+    llm = get_llm(st.session_state.groq_api_key)
+    context = "\n\n".join(doc.page_content for doc in docs)
+    prompt = (
+        "Eres el jefe de calidad de una empresa certificada en FSSC 22000. Debes responder preguntas sobre los procedimientos de la empresa. Responde en español. Usa únicamente la información del contexto proporcionado. "
+        "Si el contexto no contiene una respuesta clara, responde exactamente: "
+        "'La información no se encuentra en los documentos cargados.'\n\n"
+        f"Contexto:\n{context}\n\nPregunta: {question}"
+    )
+
+    response = llm.invoke(prompt)
+    answer = response.content.strip() if hasattr(response, "content") else str(response).strip()
+
+    if not answer or answer.lower() == "none":
+        return "No hay información disponible en los documentos cargados. Intenta cargando otro documento o haciendo otra pregunta.", []
+
+    sources = []
+    for doc in docs:
+        source_name = getattr(doc.metadata, "get", lambda *_args, **_kwargs: "Documento")("source")
+        if isinstance(source_name, str) and source_name:
+            sources.append(source_name)
+        else:
+            sources.append("Documento cargado con éxito, ya puedes comenzar a hacer preguntas sobre su contenido.")
+
+    return answer, list(dict.fromkeys(sources))
+
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+if "documents_indexed" not in st.session_state:
+    st.session_state.documents_indexed = False
+
+with st.sidebar:
+    st.header("Configuración")
+    st.session_state.groq_api_key = st.text_input(
+        "API key de Groq",
+        type="password",
+        value=st.session_state.get("groq_api_key", ""),
+        help="Inserta tu clave para usar Groq como modelo de lenguaje.",
+    )
+    if st.session_state.groq_api_key:
+        os.environ["GROQ_API_KEY"] = st.session_state.groq_api_key
+
+    st.divider()
+    st.subheader("1) Cargar documentos PDF")
+    uploaded_files = st.file_uploader(
+        "Selecciona uno o varios PDFs",
+        type=["pdf"],
+        accept_multiple_files=True,
+    )
+
+    if st.button("Guardar documentos en la base vectorial", use_container_width=True):
+        with st.spinner("Procesando y guardando los PDFs..."):
+            index_documents(uploaded_files)
+
+    if st.session_state.documents_indexed:
+        st.success("Los documentos ya están disponibles para consultar.")
+
+st.subheader("2) Chat sobre los documentos")
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if prompt := st.chat_input("Escribe una pregunta sobre los documentos..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Buscando respuesta..."):
+            response, sources = answer_question(prompt)
+        st.markdown(response)
+        if sources:
+            with st.expander("Fuentes utilizadas"):
+                for source in sources:
+                    st.write(f"- {source}")
+    st.session_state.messages.append({"role": "assistant", "content": response})
