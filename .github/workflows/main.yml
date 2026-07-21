@@ -34,18 +34,15 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Build app
-          shell: bash
-            run: |
+        shell: bash
+        run: |
               uv venv
               source .venv/bin/activate
               uv pip install flet
-              uv run flet build web --yes --verbose --base-url ${GITHUB_REPOSITORY#*/} --route-url-strategy hash          
-                - name: Upload Pages Artifact
-                  uses: actions/upload-pages-artifact@v4.0.0
-                  with:
-                    path: build/web
-                    name: web-build-artifact
-                    retention-days: 20
+              uv run flet build web --yes --verbose --base-url ${GITHUB_REPOSITORY#*/} --route-url-strategy hash
+
+
+
 
   deploy:
     name: Deploy to GitHub Pages
