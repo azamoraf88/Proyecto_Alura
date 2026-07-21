@@ -39,8 +39,7 @@ jobs:
               uv venv
               source .venv/bin/activate
               uv pip install flet
-              uv run flet build web --yes --verbose --base-url ${GITHUB_REPOSITORY#*/} --route-url-strategy hash
-
+              uv run flet build web --yes --verbose --base-url ${GITHUB_REPOSITORY#*/} --route-url-strategy hash --module-name app.py
 
 
 
