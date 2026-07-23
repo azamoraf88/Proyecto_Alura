@@ -1,3 +1,11 @@
+"""Aplicación Streamlit para consultar documentos PDF mediante recuperación semántica y un LLM.
+
+La app permite:
+1. Cargar uno o varios archivos PDF desde la interfaz.
+2. Indexarlos en una base vectorial local con Chroma.
+3. Hacer preguntas sobre el contenido usando Groq y el contexto recuperado.
+"""
+
 import os
 import tempfile
 from pathlib import Path
@@ -20,11 +28,20 @@ COLLECTION_NAME = "pdf_documents"
 
 @st.cache_resource
 def get_embeddings():
+    """Devuelve la función de embeddings reutilizable en toda la app.
+
+    Se utiliza la caché de Streamlit para evitar inicializar el modelo en cada pregunta.
+    """
     return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 
 @st.cache_resource
 def get_llm(groq_api_key: str):
+    """Crea el cliente de Groq usado para generar respuestas.
+
+    Args:
+        groq_api_key: Clave de acceso para autenticar el servicio de Groq.
+    """
     return ChatGroq(
         groq_api_key=groq_api_key,
         model_name="llama-3.1-8b-instant",
@@ -33,6 +50,11 @@ def get_llm(groq_api_key: str):
 
 
 def init_vector_store(embeddings):
+    """Inicializa el almacén vectorial local de Chroma.
+
+    Args:
+        embeddings: Instancia de la función de embeddings para crear representaciones.
+    """
     PERSIST_DIR.mkdir(exist_ok=True)
     return Chroma(
         collection_name=COLLECTION_NAME,
@@ -42,6 +64,17 @@ def init_vector_store(embeddings):
 
 
 def load_documents_from_uploads(uploaded_files):
+    """Carga el contenido de varios PDFs subidos por el usuario.
+
+    El código guarda cada archivo temporalmente en disco para que PyPDFLoader pueda
+    leerlo correctamente y luego elimina los archivos temporales al terminar.
+
+    Args:
+        uploaded_files: Lista de archivos PDF enviados desde Streamlit.
+
+    Returns:
+        Lista de documentos extraídos de los PDFs.
+    """
     documents: list[Document] = []
     temp_paths = []
 
@@ -63,6 +96,20 @@ def load_documents_from_uploads(uploaded_files):
 
 
 def index_documents(uploaded_files):
+    """Indexa los PDFs en la base vectorial para consultas posteriores.
+
+    El flujo es:
+    - valida que haya archivos y clave de Groq,
+    - carga los documentos,
+    - divide el texto en fragmentos,
+    - crea o actualiza la colección vectorial.
+
+    Args:
+        uploaded_files: Archivos PDF cargados en la interfaz.
+
+    Returns:
+        El almacén vectorial creado o actualizado, o None si hubo un error de validación.
+    """
     if not uploaded_files:
         st.warning("Sube al menos un archivo PDF para comenzar.")
         return None
@@ -99,6 +146,14 @@ def index_documents(uploaded_files):
 
 
 def answer_question(question: str):
+    """Responde una pregunta usando recuperación semántica y un modelo LLM.
+
+    Args:
+        question: Pregunta formulada por el usuario sobre los documentos cargados.
+
+    Returns:
+        Una tupla con la respuesta generada y la lista de fuentes detectadas.
+    """
     if not st.session_state.get("groq_api_key"):
         return "Introduce tu API key de Groq para poder responder preguntas.", []
 
@@ -141,6 +196,9 @@ def answer_question(question: str):
     return answer, list(dict.fromkeys(sources))
 
 
+# Inicialización de la sesión de Streamlit.
+# Estas variables permiten mantener el estado del chat, el almacén vectorial y
+# el indicador de si los documentos ya fueron indexados.
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "vector_store" not in st.session_state:
@@ -149,6 +207,7 @@ if "documents_indexed" not in st.session_state:
     st.session_state.documents_indexed = False
 
 with st.sidebar:
+    # Sección de configuración de la aplicación.
     st.header("Configuración")
     st.session_state.groq_api_key = st.text_input(
         "API key de Groq",
@@ -174,6 +233,7 @@ with st.sidebar:
     if st.session_state.documents_indexed:
         st.success("Los documentos ya están disponibles para consultar.")
 
+# Pantalla del chat. Aquí se muestran los mensajes previos y se procesa la nueva pregunta.
 st.subheader("2) Chat sobre los documentos")
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
