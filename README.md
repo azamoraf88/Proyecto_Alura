@@ -56,3 +56,8 @@ Es importante destacar que estas etapas pueden variar dependiendo del contexto y
 Procedimiento de Producción: Sistema HACCP
 Procedimiento de Producción y Mezclado de Aditivos en Polvo para Salmueras Cárnicas (Código: POE-PROD-001, Versión: 01)
 Estos documentos establecen las actividades y controles necesarios para la producción de aditivos en polvo destinados a la formulación de salmueras de inyección cárnica, garantizando la calidad funcional del producto y la inocuidad alimentaria conforme al plan HACCP.
+
+
+#Evidencias
+- Como ejemplo de procedimiento, se adjunta el archivo "Procedimiento de producción.pdf".
+- Como evidencia del despliegue del programa en Streamlit, se adjunta el archivo "Evidencia Deploy.webm"
